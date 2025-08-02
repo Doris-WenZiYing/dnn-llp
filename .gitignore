@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pkl
+*.npy
+*.h5
+*.keras
+*.log
+
+# CSV / 訓練資料
+*.csv
+
+# 圖片 / 圖表
+*.png
+
+# 模型與中間檔案
+*.pkl
+*.npy
+*.h5
+*.keras
+
+# VSCode / IDE
+.vscode/
+.idea/
+
+# 虛擬環境
+myenv/
+env/
+.venv/
+venv/
+
+# Jupyter Notebook Checkpoints (若未來使用)
+.ipynb_checkpoints/
+
+# 系統檔案
+.DS_Store
+Thumbs.db
