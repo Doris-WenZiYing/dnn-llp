@@ -143,7 +143,6 @@ N_NODES = 8                   # ← 改為 12 個節點
 N_SAMPLES = 1000                # ← 改為 1000 個樣本
 VARIATION = 0.5              # 維持不變
 OUTPUT_DIR = "./tms_8nodes_enhanced"
-TOPOLOGY_FILE = "./topology_info.pkl"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
