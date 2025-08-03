@@ -47,30 +47,6 @@ def generate_paths_for_topology(G):
                     print(f"⚠️ 無法找到 {s} → {d} 的路徑")
     return paths, demand_list
 
-# ====== 保持原有的標籤映射邏輯 ======
-def get_solution_signature(solution_dict, demand_list):
-    """保持原有的簽名生成邏輯"""
-    parts = []
-    for (s, d) in sorted(demand_list):
-        if (s, d) in solution_dict:
-            p_id, w = solution_dict[(s, d)]
-            parts.append(f"{s}_{d}_{p_id}_{w}")
-        else:
-            parts.append(f"{s}_{d}_None")
-    return "|".join(parts)
-
-def get_or_create_label(solution_dict, demand_list, solution_to_label, label_to_solution, next_label_id):
-    """保持原有的標籤生成邏輯"""
-    signature = get_solution_signature(solution_dict, demand_list)
-    if signature in solution_to_label:
-        return solution_to_label[signature], next_label_id
-    else:
-        label_id = next_label_id
-        solution_to_label[signature] = label_id
-        label_to_solution[label_id] = dict(solution_dict)
-        next_label_id += 1
-        return label_id, next_label_id
-
 # ====== 保持原有的路徑成本計算 ======
 def path_cost(path, G):
     """保持原有的成本計算"""
@@ -81,9 +57,6 @@ topo_encoding = {'full_mesh': 0, 'ring': 1, 'mesh': 2, 'random': 3}
 
 # ====== 處理每種拓撲 ======
 all_X_data, all_Y_data = [], []
-global_solution_to_label = {}
-global_label_to_solution = {}
-global_next_label_id = 0
 global_label_counter = Counter()
 
 for topo_name, topo_data in topology_info.items():
@@ -156,22 +129,23 @@ for topo_name, topo_data in topology_info.items():
         # ====== 保持原有的求解 ======
         model.solve(PULP_CBC_CMD(msg=0))
         
+        # ====== 關鍵修改：簡化標籤生成 ======
         if LpStatus[model.status] == 'Optimal':
-            solution_dict = {}
+            # 找出使用的最大波長索引
+            max_wavelength_used = -1
+            
+            # 遍歷所有解變數，找出被選中的最大波長
             for (s, d), path_list in paths.items():
                 for p_id, path in enumerate(path_list):
                     for w in range(MAX_WAVELENGTH):
                         if x[(s, d, p_id, w)].varValue == 1:
-                            solution_dict[(s, d)] = (p_id, w)
+                            if w > max_wavelength_used:
+                                max_wavelength_used = w
             
-            # 使用原有的標籤生成邏輯
-            tm_label, global_next_label_id = get_or_create_label(
-                solution_dict, demand_list,
-                global_solution_to_label, global_label_to_solution,
-                global_next_label_id
-            )
+            # 使用最大波長索引作為簡化標籤
+            tm_label = max_wavelength_used
             
-            # ====== 關鍵修改：只添加拓撲編碼到特徵 ======
+            # ====== 保持原有的特徵組合：64維TM + 1維拓撲 ======
             enhanced_features = np.concatenate([
                 flat_tm,          # 保持原有的64維TM特徵
                 [topo_code]       # 只添加1維拓撲編碼 (0,1,2,3)
@@ -182,7 +156,7 @@ for topo_name, topo_data in topology_info.items():
             global_label_counter[tm_label] += 1
             
             if DEBUG and idx % 100 == 0:
-                print(f"✅ {topo_name}: {file:<20} → Label {tm_label:<3}")
+                print(f"✅ {topo_name}: {file:<20} → Max Wavelength {tm_label}")
         else:
             infeasible_count += 1
             if DEBUG and infeasible_count <= 5:
@@ -195,46 +169,47 @@ df = pd.DataFrame(all_X_data)
 df['label'] = all_Y_data
 df.to_csv(OUTPUT_CSV, index=False)
 
-print(f"\n🌟 已儲存增強訓練集至 {OUTPUT_CSV}")
+print(f"\n🌟 已儲存簡化訓練集至 {OUTPUT_CSV}")
 print(f"   樣本數: {len(all_Y_data)}")
-print(f"   特徵維度: {len(all_X_data[0]) if all_X_data else 0} (原64維TM + 1維拓撲)")
-print(f"   類別數: {len(global_label_counter)}")
+print(f"   特徵維度: {len(all_X_data[0]) if all_X_data else 0} (64維TM + 1維拓撲)")
+print(f"   類別數: {len(global_label_counter)} (簡化後)")
 
-# 儲存標籤映射（保持原有格式）
+# ====== 儲存簡化的標籤映射 ======
+simplified_label_info = {
+    'label_type': 'max_wavelength_index',
+    'label_range': f'0 to {max(all_Y_data) if all_Y_data else -1}',
+    'topology_encoding': topo_encoding,
+    'feature_dimensions': {'tm_size': 64, 'topo_size': 1},
+    'total_samples': len(all_Y_data),
+    'total_classes': len(global_label_counter)
+}
+
 with open(LABEL_MAP_FILE, 'wb') as f:
-    pickle.dump({
-        'solution_to_label': global_solution_to_label,
-        'label_to_solution': global_label_to_solution,
-        'topology_info': topology_info,
-        'paths': {},  # 簡化儲存
-        'topo_encoding': topo_encoding
-    }, f)
+    pickle.dump(simplified_label_info, f)
 
-print(f"🧠 標籤映射已儲存至: {LABEL_MAP_FILE}")
+print(f"🧠 簡化標籤映射已儲存至: {LABEL_MAP_FILE}")
 
-# ====== 分析數據平衡 ======
-print("\n📊 各拓撲標籤分佈：")
-topo_label_stats = {}
+# ====== 分析簡化後的數據分佈 ======
+print("\n📊 簡化標籤分佈：")
 for label_id, count in global_label_counter.most_common():
-    # 統計每個拓撲的標籤數量
-    found_topo = "unknown"
-    for topo_name in topology_info.keys():
-        topo_samples = sum(1 for i, y in enumerate(all_Y_data) if y == label_id and all_X_data[i][-1] == topo_encoding[topo_name])
-        if topo_samples > 0:
-            found_topo = topo_name
-            break
-    
-    if found_topo not in topo_label_stats:
-        topo_label_stats[found_topo] = 0
-    topo_label_stats[found_topo] += count
+    percentage = count / len(all_Y_data) * 100
+    print(f"  最大波長 {label_id}: {count} 次 ({percentage:.1f}%)")
 
-for topo, count in topo_label_stats.items():
-    print(f"  {topo}: {count} 個解決方案")
+print(f"\n📊 各拓撲樣本分佈：")
+topo_stats = {name: 0 for name in topo_encoding.keys()}
+for i, features in enumerate(all_X_data):
+    topo_code = int(features[-1])  # 最後一維是拓撲編碼
+    topo_name = [name for name, code in topo_encoding.items() if code == topo_code][0]
+    topo_stats[topo_name] += 1
 
-print(f"\n🎯 最常見的 5 個解決方案：")
-for label_id, count in global_label_counter.most_common(5):
-    print(f"  Label {label_id:<3}: {count} 次")
+for topo_name, count in topo_stats.items():
+    percentage = count / len(all_Y_data) * 100 if all_Y_data else 0
+    print(f"  {topo_name.upper()}: {count} 個樣本 ({percentage:.1f}%)")
 
 # 檢查數據平衡
-balanced = all(count > len(all_Y_data) * 0.15 for count in topo_label_stats.values())
-print(f"\n{'✅' if balanced else '⚠️'} 數據平衡檢查: {'通過' if balanced else '需要調整'}")
+min_topo_samples = min(topo_stats.values()) if topo_stats.values() else 0
+max_topo_samples = max(topo_stats.values()) if topo_stats.values() else 0
+balance_ratio = min_topo_samples / max_topo_samples if max_topo_samples > 0 else 0
+
+print(f"\n{'✅' if balance_ratio > 0.7 else '⚠️'} 拓撲數據平衡度: {balance_ratio:.2f}")
+print(f"✅ 標籤簡化成功: 從數千類降至 {len(global_label_counter)} 類")
